@@ -22,6 +22,7 @@ mod leaderboard;
 mod profile;
 mod storage;
 mod tips;
+mod token;
 mod types;
 mod validation;
 

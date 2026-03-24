@@ -8,6 +8,7 @@
 //! - Message length validation
 //! - Multiple tips accumulate correctly
 //! - Global stats update after tip
+//! - SAC custody / insufficient XLM / contract can release XLM (issue #13)
 
 #![cfg(test)]
 
@@ -15,13 +16,21 @@ use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
 
 use crate::errors::ContractError;
 use crate::storage::DataKey;
+use crate::token as xlm;
 use crate::types::{Profile, Tip};
 use crate::TipzContract;
 use crate::TipzContractClient;
 
 /// Helper: set up a test environment with the contract initialized
 /// and a registered creator profile.
-fn setup_env() -> (Env, TipzContractClient<'static>, Address, Address, Address) {
+fn setup_env() -> (
+    Env,
+    TipzContractClient<'static>,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -69,12 +78,12 @@ fn setup_env() -> (Env, TipzContractClient<'static>, Address, Address, Address) 
     let tipper = Address::generate(&env);
     token_admin_client.mint(&tipper, &100_000_000_000); // 10,000 XLM
 
-    (env, client, contract_id, tipper, creator)
+    (env, client, contract_id, tipper, creator, token_address)
 }
 
 #[test]
 fn test_send_tip_success() {
-    let (env, client, contract_id, tipper, creator) = setup_env();
+    let (env, client, contract_id, tipper, creator, _sac) = setup_env();
 
     let message = String::from_str(&env, "Great work!");
     let amount: i128 = 10_000_000; // 1 XLM
@@ -116,7 +125,7 @@ fn test_send_tip_success() {
 
 #[test]
 fn test_send_tip_not_registered() {
-    let (env, client, _contract_id, tipper, _creator) = setup_env();
+    let (env, client, _contract_id, tipper, _creator, _sac) = setup_env();
 
     let unregistered = Address::generate(&env);
     let message = String::from_str(&env, "Hello");
@@ -127,7 +136,7 @@ fn test_send_tip_not_registered() {
 
 #[test]
 fn test_send_tip_cannot_tip_self() {
-    let (env, client, contract_id, _tipper, _creator) = setup_env();
+    let (env, client, contract_id, _tipper, _creator, _sac) = setup_env();
 
     // Register a self-tipper as a creator
     let self_tipper = Address::generate(&env);
@@ -161,7 +170,7 @@ fn test_send_tip_cannot_tip_self() {
 
 #[test]
 fn test_send_tip_invalid_amount_zero() {
-    let (env, client, _contract_id, tipper, creator) = setup_env();
+    let (env, client, _contract_id, tipper, creator, _sac) = setup_env();
 
     let message = String::from_str(&env, "Zero tip");
     let result = client.try_send_tip(&tipper, &creator, &0, &message);
@@ -170,7 +179,7 @@ fn test_send_tip_invalid_amount_zero() {
 
 #[test]
 fn test_send_tip_invalid_amount_negative() {
-    let (env, client, _contract_id, tipper, creator) = setup_env();
+    let (env, client, _contract_id, tipper, creator, _sac) = setup_env();
 
     let message = String::from_str(&env, "Negative tip");
     let result = client.try_send_tip(&tipper, &creator, &-1, &message);
@@ -179,7 +188,7 @@ fn test_send_tip_invalid_amount_negative() {
 
 #[test]
 fn test_send_tip_message_too_long() {
-    let (env, client, _contract_id, tipper, creator) = setup_env();
+    let (env, client, _contract_id, tipper, creator, _sac) = setup_env();
 
     // Create a message longer than 280 characters
     let long_msg = String::from_str(
@@ -192,7 +201,7 @@ fn test_send_tip_message_too_long() {
 
 #[test]
 fn test_send_tip_multiple_tips_accumulate() {
-    let (env, client, contract_id, tipper, creator) = setup_env();
+    let (env, client, contract_id, tipper, creator, _sac) = setup_env();
 
     let message = String::from_str(&env, "Tip!");
     let amount: i128 = 5_000_000;
@@ -237,7 +246,7 @@ fn test_send_tip_multiple_tips_accumulate() {
 
 #[test]
 fn test_send_tip_empty_message_allowed() {
-    let (env, client, contract_id, tipper, creator) = setup_env();
+    let (env, client, contract_id, tipper, creator, _sac) = setup_env();
 
     let message = String::from_str(&env, "");
     let amount: i128 = 10_000_000;
@@ -252,4 +261,57 @@ fn test_send_tip_empty_message_allowed() {
             .unwrap();
         assert_eq!(profile.balance, amount);
     });
+}
+
+#[test]
+fn test_send_tip_insufficient_xlm_balance() {
+    let (env, client, _contract_id, _tipper, creator, _sac) = setup_env();
+
+    let broke = Address::generate(&env);
+    let message = String::from_str(&env, "no funds");
+    let result = client.try_send_tip(&broke, &creator, &10_000_000, &message);
+    assert_eq!(result, Err(Ok(ContractError::InsufficientBalance)));
+}
+
+#[test]
+fn test_send_tip_contract_sac_holds_transferred_xlm() {
+    let (env, client, contract_id, tipper, creator, sac) = setup_env();
+
+    let token_client = token::TokenClient::new(&env, &sac);
+    let before = token_client.balance(&contract_id);
+    let amount: i128 = 10_000_000;
+    let message = String::from_str(&env, "custody");
+
+    client.send_tip(&tipper, &creator, &amount, &message);
+
+    let after = token_client.balance(&contract_id);
+    assert_eq!(after - before, amount);
+}
+
+#[test]
+fn test_native_token_address_matches_initialized_sac() {
+    let (env, _client, contract_id, _tipper, _creator, sac) = setup_env();
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(xlm::native_token_address(&env), sac);
+    });
+}
+
+#[test]
+fn test_transfer_xlm_contract_can_release_xlm() {
+    let (env, _client, contract_id, _tipper, _creator, sac) = setup_env();
+
+    let recipient = Address::generate(&env);
+    let asset = token::StellarAssetClient::new(&env, &sac);
+    asset.mint(&contract_id, &80_000_000);
+
+    let token_client = token::TokenClient::new(&env, &sac);
+    assert_eq!(token_client.balance(&contract_id), 80_000_000);
+
+    env.as_contract(&contract_id, || {
+        xlm::transfer_xlm(&env, &contract_id, &recipient, 30_000_000).unwrap();
+    });
+
+    assert_eq!(token_client.balance(&recipient), 30_000_000);
+    assert_eq!(token_client.balance(&contract_id), 50_000_000);
 }

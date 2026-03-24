@@ -4,11 +4,12 @@
 //! bounded lifetime, while aggregate counters remain in persistent contract
 //! state.
 
-use soroban_sdk::{token, Address, Env, String, Vec};
+use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::errors::ContractError;
 use crate::events::emit_tip_sent;
 use crate::storage::{self, DataKey};
+use crate::token;
 use crate::types::Tip;
 
 /// Approximate TTL for tip records in ledgers.
@@ -98,10 +99,8 @@ pub fn send_tip(
         return Err(ContractError::MessageTooLong);
     }
 
-    let native_token = storage::get_native_token(env);
-    let token_client = token::Client::new(env, &native_token);
     let contract_address = env.current_contract_address();
-    token_client.transfer(tipper, &contract_address, &amount);
+    token::transfer_xlm(env, tipper, &contract_address, amount)?;
 
     let mut profile = storage::get_profile(env, creator);
     profile.balance += amount;
