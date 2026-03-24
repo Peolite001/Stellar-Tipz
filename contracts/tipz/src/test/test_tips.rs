@@ -1,4 +1,4 @@
-//! Tests for send_tip functionality.
+//! Tests for tip record storage with temporary TTL (issue #10).
 //!
 //! Test cases covered:
 //! - Successful tip (balance updates, tip record created)

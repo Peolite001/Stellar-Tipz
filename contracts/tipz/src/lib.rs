@@ -30,7 +30,7 @@ mod test;
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 use crate::errors::ContractError;
-use crate::types::{ContractStats, LeaderboardEntry, Profile};
+use crate::types::{ContractStats, CreditTier, LeaderboardEntry, Profile, Tip};
 
 #[contract]
 pub struct TipzContract;
@@ -137,6 +137,22 @@ impl TipzContract {
         Err(ContractError::NotInitialized)
     }
 
+    /// Get a single tip record by its ID.
+    ///
+    /// Returns [`ContractError::NotFound`] when the tip does not exist or its
+    /// temporary-storage TTL has expired (~7 days after the tip was sent).
+    pub fn get_tip(env: Env, tip_id: u32) -> Result<Tip, ContractError> {
+        tips::get_tip(&env, tip_id).ok_or(ContractError::NotFound)
+    }
+
+    /// Return up to `count` recent tips received by `creator`, newest first.
+    ///
+    /// Tips that have expired are silently omitted, so the returned vector may
+    /// contain fewer than `count` entries.
+    pub fn get_recent_tips(env: Env, creator: Address, count: u32) -> Vec<Tip> {
+        tips::get_recent_tips(&env, &creator, count)
+    }
+
     // ──────────────────────────────────────────────
     // Credit Score
     // ──────────────────────────────────────────────
@@ -145,6 +161,18 @@ impl TipzContract {
     pub fn calculate_credit_score(_env: Env, _address: Address) -> Result<u32, ContractError> {
         // TODO: Implement in issue #13 - Credit Score Calculation
         Err(ContractError::NotInitialized)
+    }
+
+    /// Return the current credit score and tier for a registered profile.
+    ///
+    /// The score (0–100) is derived from the profile's tip volume, X metrics,
+    /// and account age.  Newly registered profiles start at **40** (Silver).
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotRegistered`] when no profile exists for
+    /// `address`.
+    pub fn get_credit_tier(env: Env, address: Address) -> Result<(u32, CreditTier), ContractError> {
+        credit::get_credit_tier(&env, &address)
     }
 
     // ──────────────────────────────────────────────
